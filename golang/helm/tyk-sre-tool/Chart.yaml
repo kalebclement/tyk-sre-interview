@@ -1,0 +1,6 @@
+apiVersion: v2
+name: tyk-sre-tool
+description: SRE tool that reports Deployment health and Kubernetes API server connectivity
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

@@ -1,9 +1,6 @@
 package main
 
 import (
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -11,6 +8,8 @@ import (
 	disco "k8s.io/client-go/discovery/fake"
 	"k8s.io/client-go/kubernetes/fake"
 )
+
+// HTTP-facing tests (TestHealthHandler etc.) live in handlers_test.go now.
 
 func TestGetKubernetesVersion(t *testing.T) {
 	okClientset := fake.NewSimpleClientset()
@@ -26,22 +25,4 @@ func TestGetKubernetesVersion(t *testing.T) {
 	badVer, err := getKubernetesVersion(badClientset)
 	assert.NoError(t, err)
 	assert.Equal(t, "", badVer)
-}
-
-func TestHealthHandler(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
-	rec := httptest.NewRecorder()
-
-	healthHandler(rec, req)
-	res := rec.Result()
-
-	assert.Equal(t, http.StatusOK, res.StatusCode)
-
-	defer func(Body io.ReadCloser) {
-		assert.NoError(t, Body.Close())
-	}(res.Body)
-	resp, err := io.ReadAll(res.Body)
-
-	assert.NoError(t, err)
-	assert.Equal(t, "ok", string(resp))
 }

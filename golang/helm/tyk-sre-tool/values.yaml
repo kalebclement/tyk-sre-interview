@@ -1,0 +1,56 @@
+image:
+  repository: ghcr.io/tyktechnologies/tyk-sre-assignment
+  # Defaults to Chart.appVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+# Passed to --kubeconfig; leave empty for in-cluster config (the normal case).
+kubeconfig: ""
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# ClusterRole, not Role — the tool reads Deployments across all namespaces.
+rbac:
+  create: true
+
+# ServiceMonitor requires the Prometheus Operator CRDs; off by default so the chart still installs cleanly without them.
+metrics:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

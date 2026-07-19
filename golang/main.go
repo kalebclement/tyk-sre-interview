@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"net/http"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -25,21 +24,21 @@ func main() {
 		panic(err)
 	}
 
-	version, err := getKubernetesVersion(clientset)
-	if err != nil {
-		panic(err)
+	// Not fatal — server still starts; /healthz reports live connectivity instead of crash-looping the pod.
+	if version, err := getKubernetesVersion(clientset); err != nil {
+		fmt.Printf("warning: could not reach Kubernetes API server at startup: %v\n", err)
+	} else {
+		fmt.Printf("Connected to Kubernetes %s\n", version)
 	}
 
-	fmt.Printf("Connected to Kubernetes %s\n", version)
+	server := NewServer(clientset)
 
-	if err := startServer(*listenAddr); err != nil {
+	if err := server.Start(*listenAddr); err != nil {
 		panic(err)
 	}
 }
 
-// getKubernetesVersion returns a string GitVersion of the Kubernetes server defined by the clientset.
-//
-// If it can't connect an error will be returned, which makes it useful to check connectivity.
+// getKubernetesVersion returns the server's GitVersion, or an error if it's unreachable — doubles as a connectivity check.
 func getKubernetesVersion(clientset kubernetes.Interface) (string, error) {
 	version, err := clientset.Discovery().ServerVersion()
 	if err != nil {
@@ -47,25 +46,4 @@ func getKubernetesVersion(clientset kubernetes.Interface) (string, error) {
 	}
 
 	return version.String(), nil
-}
-
-// startServer launches an HTTP server with defined handlers and blocks until it's terminated or fails with an error.
-//
-// Expects a listenAddr to bind to.
-func startServer(listenAddr string) error {
-	http.HandleFunc("/healthz", healthHandler)
-
-	fmt.Printf("Server listening on %s\n", listenAddr)
-
-	return http.ListenAndServe(listenAddr, nil)
-}
-
-// healthHandler responds with the health status of the application.
-func healthHandler(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
-
-	_, err := w.Write([]byte("ok"))
-	if err != nil {
-		fmt.Println("failed writing to response")
-	}
 }

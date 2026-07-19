@@ -1,0 +1,16 @@
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "tyk-sre-tool.fullname" . }}
+  labels:
+    {{- include "tyk-sre-tool.labels" . | nindent 4 }}
+rules:
+  # Cluster-wide: /deployments reports across every namespace.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+  # /healthz needs discovery's /version; declared explicitly so the chart doesn't rely on the default system:discovery binding.
+  - nonResourceURLs: ["/version"]
+    verbs: ["get"]
+{{- end }}

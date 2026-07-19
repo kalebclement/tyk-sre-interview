@@ -1,0 +1,99 @@
+name: CI
+
+# PR quality gate: tests, static checks, and a container smoke test must pass to merge.
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test & vet
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: golang
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: golang/go.mod
+
+      - run: go build ./...
+
+      - run: go vet ./...
+
+      - name: Check gofmt formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - run: go test -v ./...
+
+  docker-smoke-test:
+    name: Docker build & smoke test
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t tyk-sre-assignment:ci ./golang
+
+      - name: Run container against an unreachable API server
+        # No real cluster here, so use an unreachable kubeconfig — proves the server survives and /healthz reports 503 instead of crashing.
+        run: |
+          cat > /tmp/kubeconfig <<'EOF'
+          apiVersion: v1
+          kind: Config
+          clusters:
+          - cluster:
+              server: https://127.0.0.1:6443
+              insecure-skip-tls-verify: true
+            name: fake
+          contexts:
+          - context:
+              cluster: fake
+              user: fake
+            name: fake
+          current-context: fake
+          users:
+          - name: fake
+            user:
+              token: fake-token
+          EOF
+
+          docker run -d --name smoketest -p 8080:8080 \
+            -v /tmp/kubeconfig:/kubeconfig:ro \
+            tyk-sre-assignment:ci --kubeconfig=/kubeconfig --address=:8080
+
+      - name: Wait for /healthz
+        run: |
+          for i in $(seq 1 20); do
+            code="$(curl -s -o /tmp/healthz.json -w '%{http_code}' http://localhost:8080/healthz || true)"
+            if [ "$code" = "200" ] || [ "$code" = "503" ]; then
+              echo "got HTTP $code"
+              cat /tmp/healthz.json
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "server never returned a valid /healthz response"
+          docker logs smoketest
+          exit 1
+
+      - name: Container logs
+        if: always()
+        run: docker logs smoketest
+
+      - name: Clean up
+        if: always()
+        run: docker rm -f smoketest

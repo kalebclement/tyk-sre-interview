@@ -1,0 +1,11 @@
+{{ include "tyk-sre-tool.fullname" . }} has been deployed.
+
+Check that it can reach the Kubernetes API server:
+
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "tyk-sre-tool.fullname" . }} 8080:{{ .Values.service.port }}
+  curl http://localhost:8080/healthz
+
+List Deployment health across the cluster:
+
+  curl http://localhost:8080/deployments
+  curl "http://localhost:8080/deployments?namespace=<namespace>"
