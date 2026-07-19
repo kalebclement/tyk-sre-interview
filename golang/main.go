@@ -47,3 +47,4 @@ func getKubernetesVersion(clientset kubernetes.Interface) (string, error) {
 
 	return version.String(), nil
 }
+
