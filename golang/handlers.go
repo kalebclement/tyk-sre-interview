@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -56,7 +57,7 @@ func (s *Server) Start(listenAddr string) error {
 	mux.HandleFunc("/deployments", s.deploymentsHandler)
 	mux.Handle("/metrics", promhttp.HandlerFor(s.registry, promhttp.HandlerOpts{}))
 
-	fmt.Printf("Server listening on %s\n", listenAddr)
+	slog.Info("server listening", "addr", listenAddr)
 
 	return http.ListenAndServe(listenAddr, mux)
 }
@@ -67,7 +68,7 @@ func writeJSON(w http.ResponseWriter, status int, payload interface{}) {
 	w.WriteHeader(status)
 
 	if err := json.NewEncoder(w).Encode(payload); err != nil {
-		fmt.Println("failed writing JSON response:", err)
+		slog.Error("failed writing json response", "err", err)
 	}
 }
 

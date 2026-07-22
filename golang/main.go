@@ -2,7 +2,8 @@ package main
 
 import (
 	"flag"
-	"fmt"
+	"log/slog"
+	"os"
 	"time"
 
 	"k8s.io/client-go/kubernetes"
@@ -15,29 +16,35 @@ func main() {
 
 	flag.Parse()
 
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
+
 	kConfig, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
 	if err != nil {
-		panic(err)
+		slog.Error("invalid kubernetes configuration", "err", err)
+		os.Exit(1)
 	}
 
 	kConfig.Timeout = 15 * time.Second
 
 	clientset, err := kubernetes.NewForConfig(kConfig)
 	if err != nil {
-		panic(err)
+		slog.Error("failed to build kubernetes client", "err", err)
+		os.Exit(1)
 	}
 
 	// Not fatal — server still starts; /healthz reports live connectivity instead of crash-looping the pod.
 	if version, err := getKubernetesVersion(clientset); err != nil {
-		fmt.Printf("warning: could not reach Kubernetes API server at startup: %v\n", err)
+		slog.Warn("could not reach kubernetes api server at startup", "err", err)
 	} else {
-		fmt.Printf("Connected to Kubernetes %s\n", version)
+		slog.Info("connected to kubernetes", "version", version)
 	}
 
 	server := NewServer(clientset)
 
 	if err := server.Start(*listenAddr); err != nil {
-		panic(err)
+		slog.Error("http server exited", "err", err)
+		os.Exit(1)
 	}
 }
 
