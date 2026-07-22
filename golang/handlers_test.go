@@ -136,3 +136,25 @@ func TestDeploymentsHandler_ListError(t *testing.T) {
 
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
+
+// --- Start / shutdown ---
+
+func TestServerStart_GracefulShutdown(t *testing.T) {
+	s := NewServer(fake.NewSimpleClientset())
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- s.Start(ctx, "127.0.0.1:0") }()
+
+	// Give the listener a moment to come up, then trigger shutdown.
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		// A clean drain returns nil, not http.ErrServerClosed.
+		assert.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("server did not shut down after context cancellation")
+	}
+}
