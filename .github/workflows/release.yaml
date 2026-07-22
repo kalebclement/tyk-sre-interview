@@ -35,6 +35,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Read chart appVersion
+        id: chart
+        run: |
+          app_version="$(grep '^appVersion:' golang/helm/tyk-sre-tool/Chart.yaml | awk '{print $2}' | tr -d '"')"
+          echo "app_version=${app_version}" >> "$GITHUB_OUTPUT"
+
       - id: meta
         uses: docker/metadata-action@318604b99e75e41977312d83839a89be02ca4893 # v5.9.0
         with:
@@ -42,6 +48,7 @@ jobs:
           tags: |
             type=sha,format=long
             type=raw,value=latest
+            type=raw,value=${{ steps.chart.outputs.app_version }}
 
       - id: build
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
