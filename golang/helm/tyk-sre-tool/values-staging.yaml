@@ -1,0 +1,13 @@
+# Staging overrides — single replica, relaxed resources, debug-friendly.
+replicaCount: 1
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 32Mi
+  limits:
+    cpu: 100m
+    memory: 64Mi
+
+podDisruptionBudget:
+  enabled: false
