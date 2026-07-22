@@ -34,9 +34,16 @@ The tool uses a read-only `ClusterRole` (`get`, `list`, `watch` on Deployments).
 
 | Endpoint | Method | Description |
 |---|---|---|
+| `/` | GET | Embedded status dashboard — live HTML view of health + deployments, auto-refreshes every 5s. |
 | `/healthz` | GET | Verifies live K8s API connectivity; returns cluster version. 503 when unreachable. |
 | `/deployments` | GET | Compares `spec.replicas` vs `status.readyReplicas` for every Deployment. Supports `?namespace=` filtering. |
 | `/metrics` | GET | Prometheus-format metrics (see below). |
+
+### Dashboard
+
+A dependency-free HTML dashboard is compiled into the binary via `go:embed` and served at `/`. It renders `/healthz` and `/deployments` client-side, auto-refreshes every 5 seconds, supports namespace filtering, and sorts degraded deployments to the top so problems surface first. It pauses polling in background tabs to avoid needless K8s API load, and ships with a strict inline-only Content-Security-Policy — the page cannot load or call anything external.
+
+No npm, no build step, no new supply-chain surface: the distroless image and `readOnlyRootFilesystem` are unaffected. `/metrics` stays raw Prometheus format; point Grafana at it for history.
 
 ### Example responses
 
@@ -80,6 +87,8 @@ curl http://localhost:8080/healthz
 curl http://localhost:8080/deployments
 curl http://localhost:8080/deployments?namespace=default
 ```
+
+Then open `http://localhost:8080/` in a browser for the dashboard.
 
 ### Docker
 
@@ -133,7 +142,7 @@ cd golang
 make test
 ```
 
-Coverage includes handler responses (healthy, unhealthy, namespace filter, API errors, method-not-allowed), the Prometheus collector including its error path, and `getKubernetesVersion`.
+Coverage includes handler responses (healthy, unhealthy, namespace filter, API errors, method-not-allowed), the dashboard handler (served page, JSON 404 catch-all, method-not-allowed), the Prometheus collector including its error path, and `getKubernetesVersion`.
 
 ## CI/CD pipeline
 
@@ -192,11 +201,15 @@ Key configuration:
 ├── golang/
 │   ├── main.go                     # Entrypoint, flags, K8s client setup (15s client timeout)
 │   ├── handlers.go                 # HTTP handlers, Server struct with injected clientset
+│   ├── ui.go                       # Embedded dashboard handler (go:embed, CSP, JSON 404 catch-all)
 │   ├── types.go                    # Request/response JSON structs
 │   ├── metrics.go                  # Prometheus collector for deployment health gauges
 │   ├── main_test.go
 │   ├── handlers_test.go
+│   ├── ui_test.go
 │   ├── metrics_test.go
+│   ├── web/
+│   │   └── index.html              # Dashboard page — dependency-free HTML/JS, compiled into the binary
 │   ├── Makefile                    # Build, test, lint, docker targets
 │   ├── Dockerfile                  # Multi-stage: golang:1.26-alpine → distroless nonroot
 │   ├── .dockerignore
@@ -217,5 +230,6 @@ Key configuration:
 - **Per-server Prometheus registry** — avoids `MustRegister` panics when multiple tests construct their own `Server`.
 - **Bounded API calls at two levels** — 10s context timeouts on List calls (derived from `r.Context()` in handlers, so client disconnects still cancel early), with a 15s client-level timeout as the backstop for calls that take no context, like `ServerVersion()`. The context timeouts are deliberately shorter so they fire first where they exist.
 - **Explicit scrape failure signal** — the collector reports `tyk_deployment_scrape_success 0` on API errors instead of silently contributing nothing, keeping `/metrics` serving (unlike failing the whole endpoint) while making failures alertable.
+- **Embedded zero-dependency dashboard** — a single HTML file compiled in via `go:embed`, served with a strict inline-only CSP. A pure consumer of the existing JSON endpoints, so it can never disagree with the API; no npm or build stage enters the supply chain, and the distroless image is unchanged.
 - **Stateless** — no persistent storage; reads cluster state on demand. Restarts lose nothing.
 - **Separate liveness/readiness tuning** — readiness fails fast (3 attempts) so the pod leaves the Service quickly; liveness is lenient (12 attempts) because restarting can't fix an API server outage.
