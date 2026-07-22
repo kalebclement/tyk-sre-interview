@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -19,6 +20,11 @@ var (
 		"Ready replica count for a Deployment.",
 		[]string{"namespace", "deployment"}, nil,
 	)
+	deploymentScrapeSuccessDesc = prometheus.NewDesc(
+		"tyk_deployment_scrape_success",
+		"Whether the last scrape of Deployment data from the Kubernetes API succeeded (1 = success, 0 = failure).",
+		nil, nil,
+	)
 )
 
 // deploymentCollector queries Deployment health live on every Prometheus scrape,
@@ -32,13 +38,23 @@ type deploymentCollector struct {
 func (c *deploymentCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- deploymentDesiredReplicasDesc
 	ch <- deploymentReadyReplicasDesc
+	ch <- deploymentScrapeSuccessDesc
 }
 
 func (c *deploymentCollector) Collect(ch chan<- prometheus.Metric) {
-	deployments, err := c.clientset.AppsV1().Deployments("").List(context.Background(), metav1.ListOptions{})
+	// Bounded so a hung API server can't hang the Prometheus scrape indefinitely.
+	// 10s stays under Prometheus's default scrape_timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	deployments, err := c.clientset.AppsV1().Deployments("").List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return // a scrape error here just means this collector contributes nothing this round
+		// Surface the failure instead of silently contributing nothing — alert on == 0.
+		ch <- prometheus.MustNewConstMetric(deploymentScrapeSuccessDesc, prometheus.GaugeValue, 0)
+		return
 	}
+
+	ch <- prometheus.MustNewConstMetric(deploymentScrapeSuccessDesc, prometheus.GaugeValue, 1)
 
 	for _, d := range deployments.Items {
 		desired, ready := deploymentReplicas(d.Spec.Replicas, d.Status.ReadyReplicas)
