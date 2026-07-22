@@ -33,6 +33,9 @@ tyk_deployment_desired_replicas{deployment="coredns",namespace="kube-system"} 1
 # TYPE tyk_deployment_ready_replicas gauge
 tyk_deployment_ready_replicas{deployment="api",namespace="default"} 3
 tyk_deployment_ready_replicas{deployment="coredns",namespace="kube-system"} 0
+# HELP tyk_deployment_scrape_success Whether the last scrape of Deployment data from the Kubernetes API succeeded (1 = success, 0 = failure).
+# TYPE tyk_deployment_scrape_success gauge
+tyk_deployment_scrape_success 1
 `
 	assert.NoError(t, testutil.CollectAndCompare(collector, strings.NewReader(expected)))
 }
@@ -45,8 +48,13 @@ func TestDeploymentCollector_ListError(t *testing.T) {
 
 	collector := &deploymentCollector{clientset: clientset}
 
-	// A failed live query just contributes zero metrics for this scrape, not an error/panic.
-	assert.NoError(t, testutil.CollectAndCompare(collector, strings.NewReader("")))
+	// A failed live query contributes no replica metrics, but reports the failure explicitly.
+	expected := `
+# HELP tyk_deployment_scrape_success Whether the last scrape of Deployment data from the Kubernetes API succeeded (1 = success, 0 = failure).
+# TYPE tyk_deployment_scrape_success gauge
+tyk_deployment_scrape_success 0
+`
+	assert.NoError(t, testutil.CollectAndCompare(collector, strings.NewReader(expected)))
 }
 
 func TestHealthzChecksTotal_CountsOkAndError(t *testing.T) {
