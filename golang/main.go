@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"time"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -18,6 +19,8 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+
+	kConfig.Timeout = 15 * time.Second
 
 	clientset, err := kubernetes.NewForConfig(kConfig)
 	if err != nil {
