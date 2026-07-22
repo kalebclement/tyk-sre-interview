@@ -1,94 +1,221 @@
 # tyk-sre-assignment
 
-A lightweight SRE tool that monitors Kubernetes Deployment health and API server connectivity, built as a single Go binary.
+A lightweight Kubernetes Deployment health monitor built as a single Go binary. Exposes HTTP endpoints for liveness checks, per-Deployment replica status, and Prometheus metrics — designed to run in-cluster alongside your existing observability stack.
 
-## What it does
+## Architecture
 
-- **`GET /healthz`** — verifies live connectivity to the K8s API server, returns the cluster version. Returns `503` when the API server is unreachable instead of crashing.
-- **`GET /deployments`** — compares `spec.replicas` vs `status.readyReplicas` for every Deployment in the cluster. Supports `?namespace=` filtering. Returns an overall health status.
-- **`GET /metrics`** — Prometheus-format metrics: `tyk_deployment_desired_replicas` and `tyk_deployment_ready_replicas` gauges per deployment, plus `tyk_healthz_checks_total` counter by result.
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  Kubernetes cluster                                              │
+│                                                                  │
+│   ┌───────────────────┐          ┌────────────────┐              │
+│   │  tyk-sre-tool     │─────────▶│  K8s API       │              │
+│   │  (Deployment)     │   List   │  Server        │              │
+│   │                   │ Deploys  │                │              │
+│   │  GET /healthz     │◀─────────│  ServerVersion │              │
+│   │  GET /deployments │          └────────────────┘              │
+│   │  GET /metrics     │                                          │
+│   └────────┬──────────┘                                          │
+│            │ :8080                                               │
+│   ┌────────┴──────────┐          ┌────────────────┐              │
+│   │ Service (ClusterIP)│◀────────│ ServiceMonitor │              │
+│   └───────────────────┘          │  (optional)    │              │
+│                                  └───────┬────────┘              │
+│                                          │                       │
+│                                  ┌───────▼────────┐              │
+│                                  │  Prometheus    │              │
+│                                  └────────────────┘              │
+└──────────────────────────────────────────────────────────────────┘
+```
 
-## Build & run
+The tool uses a read-only `ClusterRole` (`get`, `list`, `watch` on Deployments). Every Kubernetes API call is bounded: handler and collector calls carry a 10s `context.WithTimeout`, and a 15s client-level timeout on the REST config backstops calls that take no context (like `ServerVersion()`). It runs as a distroless nonroot container (~10 MB).
+
+## Endpoints
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/healthz` | GET | Verifies live K8s API connectivity; returns cluster version. 503 when unreachable. |
+| `/deployments` | GET | Compares `spec.replicas` vs `status.readyReplicas` for every Deployment. Supports `?namespace=` filtering. |
+| `/metrics` | GET | Prometheus-format metrics (see below). |
+
+### Example responses
+
+```json
+// GET /healthz — healthy
+{"status":"ok","kubernetes_version":"1.28.0"}
+
+// GET /healthz — API server unreachable
+{"status":"error","message":"connection refused"}
+
+// GET /deployments?namespace=default
+{
+  "healthy": true,
+  "deployments": [
+    {"name":"api","namespace":"default","desiredReplicas":3,"readyReplicas":3,"healthy":true}
+  ]
+}
+```
+
+### Prometheus metrics
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `tyk_deployment_desired_replicas` | Gauge | `namespace`, `deployment` | Desired replicas per Deployment |
+| `tyk_deployment_ready_replicas` | Gauge | `namespace`, `deployment` | Ready replicas per Deployment |
+| `tyk_deployment_scrape_success` | Gauge | — | 1 if the last K8s API scrape succeeded, 0 if not — alert on `== 0` |
+| `tyk_healthz_checks_total` | Counter | `status` (`ok` / `error`) | Health check outcomes |
+
+Unhealthy deployments aren't exposed as a separate metric; alerting rules derive it as `desired != ready`. Scrape failures are reported explicitly via `tyk_deployment_scrape_success` rather than silently contributing nothing.
+
+## Quick start
+
+### Local (outside cluster)
 
 ```bash
 cd golang
-go mod tidy && go build -o tyk-sre-assignment .
-
-# Against a real cluster
+make build
 ./tyk-sre-assignment --kubeconfig ~/.kube/config --address :8080
 
-# Quick check
 curl http://localhost:8080/healthz
 curl http://localhost:8080/deployments
 curl http://localhost:8080/deployments?namespace=default
 ```
 
-## Tests
+### Docker
 
 ```bash
 cd golang
-go test -v ./...
+make docker-build
+make docker-run   # mounts ~/.kube/config automatically
 ```
 
-All tests use `fake.NewSimpleClientset()` — no real cluster required.
-
-## Docker
-
-Multi-stage build, runs on `distroless/static-debian12:nonroot` (~10 MB image).
+### Helm (in-cluster)
 
 ```bash
 cd golang
-docker build -t tyk-sre-assignment .
-```
 
-## Helm
-
-```bash
-cd golang
+# Default (development)
 helm install tyk-sre-tool helm/tyk-sre-tool -n monitoring --create-namespace
+
+# Staging — lighter resources, debug-friendly
+helm install tyk-sre-tool helm/tyk-sre-tool -n monitoring \
+  -f helm/tyk-sre-tool/values-staging.yaml
+
+# Production — HA, PDB, NetworkPolicy, ServiceMonitor
+helm install tyk-sre-tool helm/tyk-sre-tool -n monitoring \
+  -f helm/tyk-sre-tool/values-production.yaml
 
 # Verify
 kubectl port-forward -n monitoring svc/tyk-sre-tool 8080:80
 curl http://localhost:8080/healthz
 ```
 
-Key config in `values.yaml`:
-- `rbac.create` — toggles ClusterRole (read-only: get/list/watch on Deployments)
-- `serviceMonitor.enabled` — creates a Prometheus ServiceMonitor if the Operator CRDs are present
-- `replicaCount`, `resources`, `image.tag` — standard knobs
+### Makefile targets
 
-## CI/CD
+```
+make build         Compile the Go binary
+make test          Run unit tests with -race
+make vet           go vet static analysis
+make fmt           Check gofmt; fail if unformatted
+make lint          vet + fmt in one pass
+make docker-build  Build the container image
+make docker-run    Build and run with local kubeconfig
+make clean         Remove the compiled binary
+make help          Show available targets
+```
 
-Two GitHub Actions workflows:
+## Tests
 
-- **`ci.yaml`** (on PR to `main`) — runs `go test`, `go vet`, `gofmt` check, builds the Docker image, and smoke-tests it by booting against an unreachable API server and asserting `/healthz` returns 503 instead of crashing.
-- **`release.yaml`** (on merge to `main`) — re-runs tests, builds the image, tags with git SHA + `latest`, pushes to GHCR.
+All tests use `fake.NewSimpleClientset()` — no real cluster required.
 
-The split ensures untested code never produces a published image, and `main` stays deployable.
+```bash
+cd golang
+make test
+```
+
+Coverage includes handler responses (healthy, unhealthy, namespace filter, API errors, method-not-allowed), the Prometheus collector including its error path, and `getKubernetesVersion`.
+
+## CI/CD pipeline
+
+Two GitHub Actions workflows enforce a strict gate: untested code never produces a published image.
+
+### `ci.yaml` — PR quality gate
+
+Three jobs run on every pull request to `main`:
+
+**Test & vet:** `go build`, `go vet`, `gofmt` check, `go test -race` (matching `make test`), then `govulncheck` (pinned v1.5.0) for source-level vulnerability scanning.
+
+**Docker build & smoke test:** builds the image, scans it with Trivy (fails on CRITICAL/HIGH), then boots the container against an unreachable API server and asserts `/healthz` returns 503 instead of crashing.
+
+**Helm lint & validate:** `helm lint` plus `kubeconform` validation of rendered manifests for all three values files — production matters most, since it's the only one rendering the PDB, NetworkPolicy, and ServiceMonitor.
+
+### `release.yaml` — publish on merge
+
+1. Re-runs tests (defense in depth)
+2. Builds and pushes to GHCR, tagged with the git SHA, `latest`, and the chart's `appVersion` — read from `Chart.yaml` at build time so the chart's default image tag always exists in the registry
+3. Signs the image with cosign keyless (Sigstore OIDC)
+
+### Supply-chain hardening
+
+- All GitHub Actions and Dockerfile base images are **SHA-pinned** (no mutable tags)
+- **Dependabot** watches Go modules, GitHub Actions, and Docker base images weekly
+- **cosign keyless signing** on every release — consumers can verify provenance
+- **Trivy** gates CI on CRITICAL/HIGH CVEs in the final image
+
+## Helm chart
+
+The chart (`golang/helm/tyk-sre-tool/`) ships with three values files:
+
+| File | PDB | NetworkPolicy | ServiceMonitor | Use case |
+|---|---|---|---|---|
+| `values.yaml` | off | off | off | Development / quick install |
+| `values-staging.yaml` | off | off | off | Pre-production, lighter resources |
+| `values-production.yaml` | on (minAvailable: 1) | on | on | Production deployment |
+
+Key configuration:
+
+- `rbac.create` — ClusterRole for read-only Deployment access
+- `metrics.serviceMonitor.enabled` — creates a Prometheus ServiceMonitor; the chart checks for the Prometheus Operator CRD and fails loudly if it's missing rather than silently deploying a broken resource
+- `podDisruptionBudget.enabled` — prevents voluntary eviction from killing all replicas
+- `networkPolicy.enabled` — restricts ingress to allowed namespaces
+- Pod security: `runAsNonRoot`, `readOnlyRootFilesystem`, all capabilities dropped, seccomp `RuntimeDefault`
 
 ## Project structure
 
 ```
-golang/
-├── main.go              # entrypoint, flag parsing, K8s client setup
-├── handlers.go          # HTTP handlers, Server struct with injected clientset
-├── types.go             # request/response JSON structs
-├── metrics.go           # Prometheus collector for deployment health gauges
-├── main_test.go         # getKubernetesVersion unit test
-├── handlers_test.go     # handler tests (healthz, deployments, error cases)
-├── metrics_test.go      # collector tests
-├── Dockerfile           # multi-stage: golang:1.23-alpine → distroless
-├── .dockerignore
-└── helm/
-    └── tyk-sre-tool/    # Helm chart
-        ├── Chart.yaml
-        ├── values.yaml
-        └── templates/
+.
+├── .github/
+│   ├── dependabot.yml              # Weekly: Go modules, Actions, Docker
+│   └── workflows/
+│       ├── ci.yaml                 # PR gate: test/vet/fmt, govulncheck, trivy, smoke test, helm validation
+│       └── release.yaml            # Merge to main: test, build, push GHCR, cosign sign
+├── golang/
+│   ├── main.go                     # Entrypoint, flags, K8s client setup (15s client timeout)
+│   ├── handlers.go                 # HTTP handlers, Server struct with injected clientset
+│   ├── types.go                    # Request/response JSON structs
+│   ├── metrics.go                  # Prometheus collector for deployment health gauges
+│   ├── main_test.go
+│   ├── handlers_test.go
+│   ├── metrics_test.go
+│   ├── Makefile                    # Build, test, lint, docker targets
+│   ├── Dockerfile                  # Multi-stage: golang:1.26-alpine → distroless nonroot
+│   ├── .dockerignore
+│   └── helm/
+│       └── tyk-sre-tool/
+│           ├── Chart.yaml
+│           ├── values.yaml
+│           ├── values-staging.yaml
+│           ├── values-production.yaml
+│           └── templates/
+├── LICENSE.md
+└── README.md
 ```
 
 ## Design decisions
 
-- **Dependency injection** — the `Server` struct takes a `kubernetes.Interface`, so tests swap in a fake clientset with no cluster needed.
+- **Dependency injection** — `Server` takes a `kubernetes.Interface`, so tests swap in a fake clientset with no cluster needed.
 - **Per-server Prometheus registry** — avoids `MustRegister` panics when multiple tests construct their own `Server`.
+- **Bounded API calls at two levels** — 10s context timeouts on List calls (derived from `r.Context()` in handlers, so client disconnects still cancel early), with a 15s client-level timeout as the backstop for calls that take no context, like `ServerVersion()`. The context timeouts are deliberately shorter so they fire first where they exist.
+- **Explicit scrape failure signal** — the collector reports `tyk_deployment_scrape_success 0` on API errors instead of silently contributing nothing, keeping `/metrics` serving (unlike failing the whole endpoint) while making failures alertable.
 - **Stateless** — no persistent storage; reads cluster state on demand. Restarts lose nothing.
-- **Separate liveness/readiness tuning** — readiness probe fails fast (3 attempts) so the pod leaves the Service quickly; liveness probe is lenient (12 attempts) because restarting can't fix an API server outage.
+- **Separate liveness/readiness tuning** — readiness fails fast (3 attempts) so the pod leaves the Service quickly; liveness is lenient (12 attempts) because restarting can't fix an API server outage.
