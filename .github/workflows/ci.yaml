@@ -47,6 +47,15 @@ jobs:
       - name: Build image
         run: docker build -t tyk-sre-assignment:ci ./golang
 
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: tyk-sre-assignment:ci
+          format: table
+          exit-code: '1'
+          severity: CRITICAL,HIGH
+          ignore-unfixed: false
+
       - name: Run container against an unreachable API server
         # No real cluster here, so use an unreachable kubeconfig — proves the server survives and /healthz reports 503 instead of crashing.
         run: |
