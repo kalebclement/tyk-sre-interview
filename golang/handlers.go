@@ -51,6 +51,7 @@ func NewServer(clientset kubernetes.Interface) *Server {
 // Start registers routes and blocks serving on listenAddr until it fails or is terminated.
 func (s *Server) Start(listenAddr string) error {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/", s.indexHandler)
 	mux.HandleFunc("/healthz", s.healthHandler)
 	mux.HandleFunc("/deployments", s.deploymentsHandler)
 	mux.Handle("/metrics", promhttp.HandlerFor(s.registry, promhttp.HandlerOpts{}))

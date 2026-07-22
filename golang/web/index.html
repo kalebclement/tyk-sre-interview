@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tyk-sre-tool</title>
+<style>
+  :root {
+    --bg: #0c1116;
+    --panel: #131b24;
+    --line: #1f2b38;
+    --text: #dbe4ec;
+    --muted: #8496a7;
+    --ok: #3ecf8e;
+    --bad: #ff6069;
+    --accent: #5cc8ff;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    padding: 32px 20px 48px;
+    max-width: 860px;
+    margin: 0 auto;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover, a:focus-visible { text-decoration: underline; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  header { margin-bottom: 28px; }
+  .tool-name { color: var(--muted); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+
+  /* Check line — the page's headline reads like CLI check output. */
+  .check {
+    display: flex; align-items: baseline; gap: 10px;
+    font-size: 20px; margin-top: 10px;
+    flex-wrap: wrap;
+  }
+  .dot { font-size: 16px; }
+  .dot.ok  { color: var(--ok); }
+  .dot.bad { color: var(--bad); }
+  @media (prefers-reduced-motion: no-preference) {
+    .dot.bad { animation: pulse 1.6s ease-in-out infinite; }
+    @keyframes pulse { 50% { opacity: .35; } }
+  }
+  .check .detail { color: var(--muted); font-size: 14px; }
+
+  .meta { color: var(--muted); font-size: 12px; margin-top: 8px; }
+
+  .controls {
+    display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+    margin: 24px 0 12px;
+  }
+  .controls label { color: var(--muted); font-size: 12px; }
+  input[type="text"] {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    color: var(--text);
+    font: inherit;
+    padding: 6px 10px;
+    width: 220px;
+  }
+  input[type="text"]::placeholder { color: var(--muted); }
+
+  .summary { font-size: 15px; margin: 8px 0 16px; }
+  .summary .n { font-size: 22px; }
+  .summary.ok .n  { color: var(--ok); }
+  .summary.bad .n { color: var(--bad); }
+
+  table { width: 100%; border-collapse: collapse; }
+  th, td {
+    text-align: left;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  th {
+    color: var(--muted); font-weight: normal; font-size: 12px;
+    letter-spacing: .06em; text-transform: uppercase;
+  }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.degraded td:first-child { color: var(--bad); }
+
+  .pill {
+    display: inline-block; padding: 1px 8px; border-radius: 999px;
+    font-size: 12px; border: 1px solid;
+  }
+  .pill.ok  { color: var(--ok);  border-color: var(--ok); }
+  .pill.bad { color: var(--bad); border-color: var(--bad); }
+
+  .bar {
+    display: inline-block; width: 64px; height: 6px; vertical-align: 2px;
+    background: var(--line); border-radius: 3px; overflow: hidden; margin-left: 8px;
+  }
+  .bar i { display: block; height: 100%; background: var(--ok); }
+  tr.degraded .bar i { background: var(--bad); }
+
+  .notice {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+    padding: 14px 16px; color: var(--muted); margin-top: 12px;
+  }
+  .notice.error { border-color: var(--bad); color: var(--text); }
+
+  footer { margin-top: 36px; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="tool-name">tyk-sre-tool</div>
+  <div class="check" id="cluster-check" aria-live="polite">
+    <span class="dot" id="cluster-dot">●</span>
+    <span id="cluster-text">checking cluster…</span>
+    <span class="detail" id="cluster-detail"></span>
+  </div>
+  <div class="meta" id="updated"></div>
+</header>
+
+<main>
+  <div class="controls">
+    <label for="ns">namespace</label>
+    <input type="text" id="ns" placeholder="all namespaces" autocomplete="off" spellcheck="false">
+  </div>
+
+  <div class="summary" id="summary" hidden><span class="n" id="summary-n"></span> <span id="summary-text"></span></div>
+
+  <div id="deploy-error" class="notice error" hidden></div>
+  <div id="deploy-empty" class="notice" hidden></div>
+
+  <table id="deploy-table" hidden>
+    <thead>
+      <tr><th>deployment</th><th>namespace</th><th>ready</th><th>status</th></tr>
+    </thead>
+    <tbody id="deploy-rows"></tbody>
+  </table>
+</main>
+
+<footer>
+  raw endpoints: <a href="/healthz">/healthz</a> · <a href="/deployments">/deployments</a> · <a href="/metrics">/metrics</a>
+  — metrics are Prometheus-format; point Grafana at them for history.
+</footer>
+
+<script>
+(() => {
+  "use strict";
+
+  const REFRESH_MS = 5000;
+  const $ = (id) => document.getElementById(id);
+  let lastUpdated = null;
+  let debounceTimer = null;
+
+  async function fetchJSON(url) {
+    const res = await fetch(url, { headers: { "Accept": "application/json" } });
+    const body = await res.json();
+    return { ok: res.ok, body };
+  }
+
+  async function refreshHealth() {
+    const dot = $("cluster-dot"), text = $("cluster-text"), detail = $("cluster-detail");
+    try {
+      const { ok, body } = await fetchJSON("/healthz");
+      if (ok && body.status === "ok") {
+        dot.className = "dot ok";
+        text.textContent = "cluster reachable";
+        detail.textContent = body.kubernetes_version ? "kubernetes " + body.kubernetes_version : "";
+      } else {
+        dot.className = "dot bad";
+        text.textContent = "API server unreachable";
+        detail.textContent = body.message || "";
+      }
+    } catch (err) {
+      dot.className = "dot bad";
+      text.textContent = "tool unreachable";
+      detail.textContent = String(err);
+    }
+  }
+
+  function renderDeployments(resp) {
+    const rows = $("deploy-rows");
+    rows.textContent = "";
+
+    const items = resp.deployments || [];
+    const degraded = items.filter(d => !d.healthy).length;
+
+    const summary = $("summary");
+    summary.hidden = items.length === 0;
+    summary.className = "summary " + (degraded === 0 ? "ok" : "bad");
+    $("summary-n").textContent = (items.length - degraded) + "/" + items.length;
+    $("summary-text").textContent = degraded === 0
+      ? "deployments ready"
+      : "deployments ready — " + degraded + " degraded";
+
+    // Degraded first: the rows that need attention shouldn't hide below the fold.
+    items.sort((a, b) =>
+      (a.healthy - b.healthy) ||
+      a.namespace.localeCompare(b.namespace) ||
+      a.name.localeCompare(b.name));
+
+    for (const d of items) {
+      const tr = document.createElement("tr");
+      if (!d.healthy) tr.className = "degraded";
+
+      const ratio = d.desiredReplicas > 0 ? Math.min(d.readyReplicas / d.desiredReplicas, 1) : 1;
+      const cells = [
+        d.name,
+        d.namespace,
+        null, // ready cell built below
+        null, // status cell built below
+      ];
+
+      for (let i = 0; i < cells.length; i++) {
+        const td = document.createElement("td");
+        if (i === 2) {
+          td.className = "num";
+          td.textContent = d.readyReplicas + "/" + d.desiredReplicas;
+          const bar = document.createElement("span");
+          bar.className = "bar";
+          const fill = document.createElement("i");
+          fill.style.width = (ratio * 100) + "%";
+          bar.appendChild(fill);
+          td.appendChild(bar);
+        } else if (i === 3) {
+          const pill = document.createElement("span");
+          pill.className = "pill " + (d.healthy ? "ok" : "bad");
+          pill.textContent = d.healthy ? "ready" : "degraded";
+          td.appendChild(pill);
+        } else {
+          td.textContent = cells[i];
+        }
+        tr.appendChild(td);
+      }
+      rows.appendChild(tr);
+    }
+
+    const empty = $("deploy-empty");
+    empty.hidden = items.length > 0;
+    if (items.length === 0) {
+      const ns = $("ns").value.trim();
+      empty.textContent = ns
+        ? "No deployments found in namespace \"" + ns + "\"."
+        : "No deployments found in the cluster.";
+    }
+    $("deploy-table").hidden = items.length === 0;
+  }
+
+  async function refreshDeployments() {
+    const ns = $("ns").value.trim();
+    const url = "/deployments" + (ns ? "?namespace=" + encodeURIComponent(ns) : "");
+    const errBox = $("deploy-error");
+    try {
+      const { ok, body } = await fetchJSON(url);
+      if (!ok) {
+        errBox.hidden = false;
+        errBox.textContent = "Could not list deployments: " + (body.message || "unexpected error");
+        $("deploy-table").hidden = true;
+        $("summary").hidden = true;
+        $("deploy-empty").hidden = true;
+        return;
+      }
+      errBox.hidden = true;
+      renderDeployments(body);
+    } catch (err) {
+      errBox.hidden = false;
+      errBox.textContent = "Could not reach the tool: " + String(err);
+    }
+  }
+
+  function stampUpdated() {
+    lastUpdated = new Date();
+    $("updated").textContent = "updated " + lastUpdated.toLocaleTimeString();
+  }
+
+  async function refreshAll() {
+    if (document.hidden) return; // don't hammer the K8s API from background tabs
+    await Promise.all([refreshHealth(), refreshDeployments()]);
+    stampUpdated();
+  }
+
+  $("ns").addEventListener("input", () => {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(refreshDeployments, 300);
+  });
+
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshAll(); });
+
+  refreshAll();
+  setInterval(refreshAll, REFRESH_MS);
+})();
+</script>
+</body>
+</html>
