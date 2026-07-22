@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -96,7 +98,10 @@ func (s *Server) deploymentsHandler(w http.ResponseWriter, r *http.Request) {
 
 	namespace := r.URL.Query().Get("namespace")
 
-	deployments, err := s.clientset.AppsV1().Deployments(namespace).List(r.Context(), metav1.ListOptions{})
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	deployments, err := s.clientset.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Message: fmt.Sprintf("failed to list deployments: %v", err)})
 		return
