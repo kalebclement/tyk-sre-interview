@@ -35,7 +35,7 @@ jobs:
             exit 1
           fi
 
-      - run: go test -v ./...
+      - run: go test -v -race ./...
 
       - name: Run govulncheck
         run: |
@@ -111,3 +111,23 @@ jobs:
       - name: Clean up
         if: always()
         run: docker rm -f smoketest
+
+  helm:
+    name: Helm lint & validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Helm lint
+        run: helm lint golang/helm/tyk-sre-tool
+
+      - name: Validate rendered manifests (default values)
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.7.0/kubeconform-linux-amd64.tar.gz | tar xz
+          helm template golang/helm/tyk-sre-tool | ./kubeconform -strict -summary -ignore-missing-schemas
+
+      - name: Validate rendered manifests (staging values)
+        run: helm template golang/helm/tyk-sre-tool -f golang/helm/tyk-sre-tool/values-staging.yaml | ./kubeconform -strict -summary -ignore-missing-schemas
+
+      - name: Validate rendered manifests (production values)
+        run: helm template golang/helm/tyk-sre-tool -f golang/helm/tyk-sre-tool/values-production.yaml | ./kubeconform -strict -summary -ignore-missing-schemas
