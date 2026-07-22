@@ -49,17 +49,48 @@ func NewServer(clientset kubernetes.Interface) *Server {
 	}
 }
 
-// Start registers routes and blocks serving on listenAddr until it fails or is terminated.
-func (s *Server) Start(listenAddr string) error {
+// Start registers routes and serves on listenAddr until the server fails or
+// ctx is cancelled (SIGTERM/SIGINT), at which point it drains in-flight
+// requests before returning.
+func (s *Server) Start(ctx context.Context, listenAddr string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.indexHandler)
 	mux.HandleFunc("/healthz", s.healthHandler)
 	mux.HandleFunc("/deployments", s.deploymentsHandler)
 	mux.Handle("/metrics", promhttp.HandlerFor(s.registry, promhttp.HandlerOpts{}))
 
-	slog.Info("server listening", "addr", listenAddr)
+	srv := &http.Server{
+		Addr:    listenAddr,
+		Handler: mux,
+		// Bound slow clients the same way we bound slow upstreams: WriteTimeout
+		// exceeds the 10s K8s handler timeout so it can never cut a valid
+		// response short; ReadHeaderTimeout closes slowloris-style connections.
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 
-	return http.ListenAndServe(listenAddr, mux)
+	errCh := make(chan error, 1)
+	go func() {
+		slog.Info("server listening", "addr", listenAddr)
+		errCh <- srv.ListenAndServe()
+	}()
+
+	select {
+	case err := <-errCh:
+		// ListenAndServe never returns nil — this is a bind or serve failure.
+		return err
+	case <-ctx.Done():
+	}
+
+	// Drain in-flight requests. 15s exceeds the 10s handler timeout, so no
+	// request that was going to succeed gets cut off by the shutdown itself.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	slog.Info("shutting down, draining in-flight requests")
+	return srv.Shutdown(shutdownCtx)
 }
 
 // writeJSON encodes payload as the JSON response body with the given status code.

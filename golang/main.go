@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"k8s.io/client-go/kubernetes"
@@ -42,7 +45,11 @@ func main() {
 
 	server := NewServer(clientset)
 
-	if err := server.Start(*listenAddr); err != nil {
+	// SIGTERM is what kubelet sends on pod termination
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	defer stop()
+
+	if err := server.Start(ctx, *listenAddr); err != nil {
 		slog.Error("http server exited", "err", err)
 		os.Exit(1)
 	}
