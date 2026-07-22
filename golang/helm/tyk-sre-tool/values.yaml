@@ -51,6 +51,10 @@ securityContext:
   capabilities:
     drop: ["ALL"]
 
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
 nodeSelector: {}
 tolerations: []
 affinity: {}
