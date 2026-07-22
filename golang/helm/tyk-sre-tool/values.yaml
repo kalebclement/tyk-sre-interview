@@ -51,6 +51,16 @@ securityContext:
   capabilities:
     drop: ["ALL"]
 
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+networkPolicy:
+  enabled: false
+  allowedNamespaces:
+    - monitoring
+    - kube-system
+
 nodeSelector: {}
 tolerations: []
 affinity: {}

@@ -1,0 +1,25 @@
+# Production overrides — HA, proper resources, all operational features on.
+replicaCount: 2
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+networkPolicy:
+  enabled: true
+  allowedNamespaces:
+    - monitoring
+    - kube-system
+
+metrics:
+  serviceMonitor:
+    enabled: true
+    interval: 30s
