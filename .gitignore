@@ -3,3 +3,6 @@
 __pycache__
 
 tyk-sre-assignment
+kube-dead-config.sh
+preflight.sh
+.DS_Store
