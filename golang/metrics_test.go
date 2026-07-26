@@ -22,7 +22,7 @@ func TestDeploymentCollector_Collect(t *testing.T) {
 		deployment("kube-system", "coredns", 1, 0),
 	)
 
-	collector := &deploymentCollector{clientset: clientset}
+	collector := &deploymentCollector{lister: newAPILister(clientset)}
 
 	expected := `
 # HELP tyk_deployment_desired_replicas Desired replica count for a Deployment.
@@ -46,7 +46,7 @@ func TestDeploymentCollector_ListError(t *testing.T) {
 		return true, nil, errors.New("api server unavailable")
 	})
 
-	collector := &deploymentCollector{clientset: clientset}
+	collector := &deploymentCollector{lister: newAPILister(clientset)}
 
 	// A failed live query contributes no replica metrics, but reports the failure explicitly.
 	expected := `

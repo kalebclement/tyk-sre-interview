@@ -5,8 +5,6 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
 )
 
 var (
@@ -27,12 +25,12 @@ var (
 	)
 )
 
-// deploymentCollector queries Deployment health live on every Prometheus scrape,
-// instead of caching whatever /deployments last computed — so the metric stays
-// accurate even if nobody ever calls the JSON endpoint. "unhealthy" isn't
-// exposed directly; alerting rules derive it as desired != ready.
+// deploymentCollector reports Deployment health on every Prometheus scrape,
+// reading through the same lister the JSON handler uses — so the two never
+// disagree, whether that lister is direct-API or informer-backed. "unhealthy"
+// isn't exposed directly; alerting rules derive it as desired != ready.
 type deploymentCollector struct {
-	clientset kubernetes.Interface
+	lister DeploymentLister
 }
 
 func (c *deploymentCollector) Describe(ch chan<- *prometheus.Desc) {
@@ -42,21 +40,23 @@ func (c *deploymentCollector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (c *deploymentCollector) Collect(ch chan<- prometheus.Metric) {
-	// Bounded so a hung API server can't hang the Prometheus scrape indefinitely.
-	// 10s stays under Prometheus's default scrape_timeout.
+	// Bounded so a hung API server can't hang the scrape. 10s stays under
+	// Prometheus's default scrape_timeout. (For the informer lister the read is
+	// cache-local, so the timeout is effectively free.)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	deployments, err := c.clientset.AppsV1().Deployments("").List(ctx, metav1.ListOptions{})
-	if err != nil {
-		// Surface the failure instead of silently contributing nothing — alert on == 0.
+	deployments, ready, err := c.lister.ListDeployments(ctx, "")
+	if err != nil || !ready {
+		// An error or an unsynced cache both mean "don't trust this scrape".
+		// Report it instead of silently contributing nothing — alert on == 0.
 		ch <- prometheus.MustNewConstMetric(deploymentScrapeSuccessDesc, prometheus.GaugeValue, 0)
 		return
 	}
 
 	ch <- prometheus.MustNewConstMetric(deploymentScrapeSuccessDesc, prometheus.GaugeValue, 1)
 
-	for _, d := range deployments.Items {
+	for _, d := range deployments {
 		desired, ready := deploymentReplicas(d.Spec.Replicas, d.Status.ReadyReplicas)
 		ch <- prometheus.MustNewConstMetric(deploymentDesiredReplicasDesc, prometheus.GaugeValue, float64(desired), d.Namespace, d.Name)
 		ch <- prometheus.MustNewConstMetric(deploymentReadyReplicasDesc, prometheus.GaugeValue, float64(ready), d.Namespace, d.Name)
