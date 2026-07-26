@@ -160,3 +160,25 @@ func TestServerStart_GracefulShutdown(t *testing.T) {
 		t.Fatal("server did not shut down after context cancellation")
 	}
 }
+
+// stubLister drives the DeploymentLister contract directly, including the
+// not-ready state the informer cache reports before it syncs.
+type stubLister struct {
+	ready bool
+	err   error
+}
+
+func (s stubLister) ListDeployments(context.Context, string) ([]appsv1.Deployment, bool, error) {
+	return nil, s.ready, s.err
+}
+
+// When the lister reports not-ready (cache still syncing), /deployments must
+// answer 503 — never an empty 200 that reads as "no deployments, all healthy".
+func TestDeploymentsHandler_CacheNotReady(t *testing.T) {
+	s := NewServerWithLister(fake.NewSimpleClientset(), stubLister{ready: false})
+
+	rec := httptest.NewRecorder()
+	s.deploymentsHandler(rec, httptest.NewRequest(http.MethodGet, "/deployments", nil))
+
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+}

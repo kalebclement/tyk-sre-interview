@@ -16,6 +16,7 @@ import (
 func main() {
 	kubeconfig := flag.String("kubeconfig", "", "path to kubeconfig, leave empty for in-cluster")
 	listenAddr := flag.String("address", ":8080", "HTTP server listen address")
+	useInformer := flag.Bool("use-informer", false, "read Deployments from a shared informer cache instead of direct API calls (prototype; see PR)")
 
 	flag.Parse()
 
@@ -43,11 +44,26 @@ func main() {
 		slog.Info("connected to kubernetes", "version", version)
 	}
 
-	server := NewServer(clientset)
-
 	// SIGTERM is what kubelet sends on pod termination
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
+
+	var server *Server
+	if *useInformer {
+		// Prototype path: informer cache. Start it and block on the initial
+		// sync before serving, so /deployments never answers from an empty
+		// cache. resync 0 = rely on watch events only.
+		lister := newInformerLister(clientset, 0)
+		slog.Info("starting deployment informer, waiting for cache sync")
+		if !lister.start(ctx) {
+			slog.Error("informer cache failed to sync before shutdown")
+			os.Exit(1)
+		}
+		slog.Info("informer cache synced")
+		server = NewServerWithLister(clientset, lister)
+	} else {
+		server = NewServer(clientset)
+	}
 
 	if err := server.Start(ctx, *listenAddr); err != nil {
 		slog.Error("http server exited", "err", err)

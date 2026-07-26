@@ -10,13 +10,16 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
 
 // Server holds route handler deps. Clientset injected for testability.
 type Server struct {
 	clientset kubernetes.Interface
+
+	// lister is the read side for /deployments. Defaults to direct-API; main
+	// can swap in an informer cache instead.
+	lister DeploymentLister
 
 	// A field, not a direct call, so tests can fake an unreachable API — client-go's fake discovery ignores reactor errors on ServerVersion().
 	getK8sVersion func(kubernetes.Interface) (string, error)
@@ -27,8 +30,16 @@ type Server struct {
 	healthzChecksTotal *prometheus.CounterVec
 }
 
-// NewServer constructs a Server backed by the given Kubernetes clientset.
+// NewServer constructs a Server that reads Deployments directly from the API
+// server. This is the default path; NewServerWithLister swaps in another one.
 func NewServer(clientset kubernetes.Interface) *Server {
+	return NewServerWithLister(clientset, newAPILister(clientset))
+}
+
+// NewServerWithLister constructs a Server with an explicit lister, so the read
+// side can be an informer cache instead of direct calls. The collector shares
+// the same lister, keeping the JSON and metrics paths identical.
+func NewServerWithLister(clientset kubernetes.Interface, lister DeploymentLister) *Server {
 	registry := prometheus.NewRegistry()
 
 	healthzChecksTotal := prometheus.NewCounterVec(
@@ -39,10 +50,11 @@ func NewServer(clientset kubernetes.Interface) *Server {
 		[]string{"status"},
 	)
 	registry.MustRegister(healthzChecksTotal)
-	registry.MustRegister(&deploymentCollector{clientset: clientset})
+	registry.MustRegister(&deploymentCollector{lister: lister})
 
 	return &Server{
 		clientset:          clientset,
+		lister:             lister,
 		getK8sVersion:      getKubernetesVersion,
 		registry:           registry,
 		healthzChecksTotal: healthzChecksTotal,
@@ -134,15 +146,21 @@ func (s *Server) deploymentsHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	deployments, err := s.clientset.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{})
+	deployments, ready, err := s.lister.ListDeployments(ctx, namespace)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Message: fmt.Sprintf("failed to list deployments: %v", err)})
+		return
+	}
+	if !ready {
+		// Informer cache hasn't synced yet. 503 (not an empty 200) so a caller
+		// can't read "not ready" as "no deployments, all healthy".
+		writeJSON(w, http.StatusServiceUnavailable, ErrorResponse{Message: "deployment cache not yet synced"})
 		return
 	}
 
 	resp := DeploymentsResponse{Healthy: true, Deployments: []DeploymentHealth{}}
 
-	for _, d := range deployments.Items {
+	for _, d := range deployments {
 		desired, ready := deploymentReplicas(d.Spec.Replicas, d.Status.ReadyReplicas)
 		healthy := ready == desired
 		if !healthy {
